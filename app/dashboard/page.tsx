@@ -16,6 +16,8 @@ export default function Dashboard() {
   const [nodes, setNodes] = useState<PNode[]>([]);
   const [loading, setLoading] = useState(true);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+  const [connectedHost, setConnectedHost] = useState<string | null>(null);
+  const [serverError, setServerError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [filter, setFilter] = useState<FilterState>({ status: 'all', minVersion: '' });
   const [sortField, setSortField] = useState<SortField>('latency');
@@ -27,8 +29,17 @@ export default function Dashboard() {
       // Fetch from our existing Next.js API
       const response = await fetch('/api/nodes');
       const data = await response.json();
-      
-      if (data.success && data.data && data.data.nodes) {
+
+      if (!data || data.success === false) {
+        setServerError(data?.error || 'Failed to fetch nodes from server');
+        setNodes([]);
+        return;
+      }
+
+      setServerError(null);
+      setConnectedHost(data?.data?.connectedHost || null);
+
+      if (data.data && data.data.nodes) {
         // Transform backend format to frontend format
         const transformed: PNode[] = data.data.nodes.map((node: any) => ({
           pubkey: node.pubkey,
@@ -44,6 +55,7 @@ export default function Dashboard() {
       }
     } catch (error) {
       console.error('Failed to fetch nodes', error);
+      setServerError(String(error));
     } finally {
       setLoading(false);
     }
@@ -125,6 +137,12 @@ export default function Dashboard() {
           <p className="text-slate-500 dark:text-slate-400 mt-1">
             Real-time insights for Xandeum pNode Network
           </p>
+          {connectedHost && (
+            <div className="text-sm text-slate-600 dark:text-slate-300 mt-2">Connected to host: {connectedHost}</div>
+          )}
+          {serverError && (
+            <div className="text-sm text-red-600 dark:text-red-400 mt-2">Debug: {serverError}</div>
+          )}
         </div>
         <div className="flex items-center text-sm text-slate-500 bg-white dark:bg-slate-800 px-3 py-1.5 rounded-full border border-slate-200 dark:border-slate-700 shadow-sm">
           <RefreshCw size={14} className={`mr-2 ${loading ? 'animate-spin' : ''}`} />

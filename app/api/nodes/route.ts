@@ -10,8 +10,20 @@ import { APIResponse } from '@/lib/types';
 
 export async function GET(request: NextRequest) {
   try {
-    // Fetch all nodes from pRPC
-    const nodes = await getGossipNodes();
+    // Fetch all nodes from the internal pRPC proxy endpoint
+    const proxyUrl = new URL('/api/prpc', request.url);
+    proxyUrl.searchParams.set('method', 'getGossipNodes');
+
+    const pr = await fetch(proxyUrl.toString(), { method: 'GET' });
+    const prjson = await pr.json().catch(() => null);
+
+    if (!pr.ok || !prjson || prjson.ok === false) {
+      console.error('Failed to get gossip nodes from /api/prpc', prjson);
+      throw new Error(prjson?.error || 'Proxy fetch failed');
+    }
+
+    // The proxy returns shape: { ok: true, host, data }
+    const nodes = prjson?.data?.result ?? prjson?.data ?? [];
 
     // Calculate metrics
     const metrics = calculateMetrics(nodes);
@@ -20,11 +32,13 @@ export async function GET(request: NextRequest) {
     const response: APIResponse<{
       nodes: typeof nodes;
       metrics: typeof metrics;
+      connectedHost?: string | null;
     }> = {
       success: true,
       data: {
         nodes,
         metrics,
+        connectedHost: (prjson && prjson.host) || null,
       },
       timestamp: new Date().toISOString(),
     };

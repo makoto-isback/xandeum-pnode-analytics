@@ -1,0 +1,25 @@
+version: '3.8'
+services:
+  xandeum-prpc-proxy:
+    container_name: xandeum-prpc-proxy
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: always
+    ports:
+      - "8080:80"
+    environment:
+      # Comma-separated list of upstream pRPC hosts (override if needed)
+      PRPC_HOSTS: "http://173.212.203.145:8899,http://173.212.220.65:8899,http://161.97.97.41:8899,http://192.190.136.36:8899,http://192.190.136.37:8899,http://192.190.136.38:8899,http://192.190.136.28:8899,http://192.190.136.29:8899,http://207.244.255.1:8899"
+      # Optional API key to require for requests
+      PROXY_API_KEY: ""
+    deploy:
+      resources:
+        limits:
+          memory: 524288000 # 512M in bytes
+    mem_limit: 512m
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3

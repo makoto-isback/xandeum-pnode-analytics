@@ -234,6 +234,60 @@ npm run build
 npm start
 ```
 
+## Deploying the Dockerized pRPC Proxy (Recommended for Production)
+
+This repository includes a lightweight Dockerized pRPC proxy in `server-proxy/`. Run the proxy on a VPS with reliable egress so Vercel (or other serverless platforms) can reach pRPC hosts.
+
+Quick options:
+
+- Use the included deploy script on an Ubuntu/Debian VPS:
+
+```bash
+sudo bash deploy_proxy_vps.sh <your-vps-ip-or-domain>
+# Example:
+sudo bash deploy_proxy_vps.sh 203.0.113.12
+```
+
+- Or use `docker compose` directly inside `server-proxy/`:
+
+```bash
+cd server-proxy
+docker compose build
+docker compose up -d
+```
+
+The `server-proxy/docker-compose.yml` file exposes the proxy at port `8080` on the host and includes an optional `PROXY_API_KEY` env var for simple authentication.
+
+### Systemd (the deploy script creates this automatically)
+
+The deploy script creates a `systemd` service named `xandeum-prpc-proxy.service` which runs `docker compose up -d` on boot and provides `systemctl start|stop|status` control.
+
+### Vercel Setup
+
+In your Vercel project settings, set the environment variable:
+
+```
+NEXT_PUBLIC_PRPC_ENDPOINT=http://<your-vps-ip-or-domain>:8080
+```
+
+Then redeploy the frontend. The Next.js server code will forward all pRPC calls to the proxy.
+
+### Optional API key
+
+To require a simple header-based API key for proxy requests, set `PROXY_API_KEY` in the proxy host environment (or `server-proxy/docker-compose.yml`). Then set the same key in Vercel as an environment variable named `PROXY_API_KEY` so the Next.js server can include the header when calling `/api/prpc`.
+
+Example header sent by the server when `PROXY_API_KEY` is set:
+
+```
+x-api-key: <your-key>
+```
+
+### Final Notes
+
+- Do **not** expose upstream pRPC hosts to browsers — always route through the server-side proxy.
+- If Vercel cannot reach the proxy, verify your VPS firewall and security groups allow port `8080` and that the proxy service is running.
+
+
 📘 4. HACKATHON SUBMISSION WRITE-UP
 # Xandeum pNode Analytics Platform — Submission
 

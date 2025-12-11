@@ -32,6 +32,7 @@ const HOSTS = PRIMARY ? [PRIMARY].concat(DEFAULT_HOSTS) : DEFAULT_HOSTS;
 
 const TIMEOUT_MS = Number(process.env.PRPC_TIMEOUT_MS || 5000);
 const CACHE_TTL_MS = Number(process.env.CACHE_TTL_MS || 60000);
+const PROXY_API_KEY = process.env.PROXY_API_KEY || '';
 
 // Simple in-memory cache
 const cache = new Map();
@@ -70,12 +71,22 @@ app.post('/', async (req, res) => {
     return res.status(400).json({ ok: false, error: 'Invalid JSON-RPC body' });
   }
 
+  // Simple API key check (if configured)
+  if (PROXY_API_KEY) {
+    const key = (req.headers['x-api-key'] || req.headers['X-API-KEY'] || req.headers['x-api_key']);
+    if (!key || String(key) !== PROXY_API_KEY) {
+      console.warn('Unauthorized request to proxy');
+      return res.status(401).json({ ok: false, error: 'Unauthorized' });
+    }
+  }
+
   const cacheKey = body.method + JSON.stringify(body.params || []);
   if (body.method === 'getGossipNodes') {
     const cached = getCache(cacheKey);
     if (cached) return res.json({ ok: true, host: 'cache', data: cached });
   }
 
+  const perHostErrors = [];
   let lastErr = null;
   for (const host of HOSTS) {
     try {
@@ -87,7 +98,9 @@ app.post('/', async (req, res) => {
       }, TIMEOUT_MS);
 
       if (!r.ok) {
-        lastErr = new Error(`Host ${host} returned ${r.status}`);
+        const err = new Error(`Host ${host} returned ${r.status}`);
+        perHostErrors.push({ host, error: err.message });
+        lastErr = err;
         continue;
       }
 
@@ -98,16 +111,19 @@ app.post('/', async (req, res) => {
         setCache(cacheKey, json, CACHE_TTL_MS);
       }
 
+      console.log(`Successful upstream host: ${host}`);
       return res.json({ ok: true, host, data: json });
     } catch (err) {
+      const msg = err && err.message ? err.message : String(err);
+      perHostErrors.push({ host, error: msg });
       lastErr = err;
-      console.warn(`pRPC host ${host} failed: ${err.message || err}`);
+      console.warn(`pRPC host ${host} failed: ${msg}`);
       continue;
     }
   }
 
   console.error('All pRPC hosts failed', lastErr && (lastErr.message || String(lastErr)));
-  res.status(503).json({ ok: false, error: 'All pRPC hosts failed', lastError: lastErr && (lastErr.message || String(lastErr)) });
+  res.status(503).json({ ok: false, error: 'All pRPC hosts failed', lastError: lastErr && (lastErr.message || String(lastErr)), details: perHostErrors });
 });
 
 // Also support GET for quick checks: /?method=getGossipNodes
