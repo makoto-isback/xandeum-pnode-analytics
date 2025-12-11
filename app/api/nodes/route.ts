@@ -19,7 +19,15 @@ export async function GET(request: NextRequest) {
 
     if (!pr.ok || !prjson || prjson.ok === false) {
       console.error('Failed to get gossip nodes from /api/prpc', prjson);
-      throw new Error(prjson?.error || 'Proxy fetch failed');
+
+      const response: APIResponse<null> = {
+        success: false,
+        error: prjson?.error || 'Proxy fetch failed',
+        timestamp: new Date().toISOString(),
+      };
+
+      // include debug fields if available
+      return NextResponse.json({ ...response, debug: { proxyUrl: prjson?.proxy ?? null, proxyStatusCode: prjson?.proxyStatusCode ?? prjson?.status ?? null, proxyErrorRaw: prjson?.detail ?? null, proxyUrlUndefined: !prjson?.proxy } }, { status: pr?.status || 502 });
     }
 
     // The proxy returns shape: { ok: true, host, data }
@@ -42,6 +50,15 @@ export async function GET(request: NextRequest) {
       },
       timestamp: new Date().toISOString(),
     };
+
+    // attach debug meta
+    const debugMeta = { proxyUrl: prjson?.proxy ?? null, proxyStatusCode: prjson?.proxyStatusCode ?? prjson?.status ?? null, proxyErrorRaw: prjson?.detail ?? null, proxyUrlUndefined: !prjson?.proxy };
+
+    return NextResponse.json({ ...response, debug: debugMeta }, {
+      headers: {
+        'Cache-Control': 'public, s-maxage=60, stale-while-revalidate=120',
+      },
+    });
 
     return NextResponse.json(response, {
       headers: {

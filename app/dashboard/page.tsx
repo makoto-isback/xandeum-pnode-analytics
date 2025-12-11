@@ -18,6 +18,10 @@ export default function Dashboard() {
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [connectedHost, setConnectedHost] = useState<string | null>(null);
   const [serverError, setServerError] = useState<string | null>(null);
+  const [proxyUrlTried, setProxyUrlTried] = useState<string | null>(null);
+  const [proxyStatusCode, setProxyStatusCode] = useState<number | null>(null);
+  const [proxyErrorRaw, setProxyErrorRaw] = useState<string | null>(null);
+  const [proxyUrlUndefined, setProxyUrlUndefined] = useState<boolean>(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [filter, setFilter] = useState<FilterState>({ status: 'all', minVersion: '' });
   const [sortField, setSortField] = useState<SortField>('latency');
@@ -31,13 +35,22 @@ export default function Dashboard() {
       const data = await response.json();
 
       if (!data || data.success === false) {
+        // also capture debug info if present
         setServerError(data?.error || 'Failed to fetch nodes from server');
+        setProxyUrlTried(data?.debug?.proxyUrl ?? null);
+        setProxyStatusCode(data?.debug?.proxyStatusCode ?? null);
+        setProxyErrorRaw(data?.debug?.proxyErrorRaw ?? data?.detail ?? null);
+        setProxyUrlUndefined(Boolean(data?.debug?.proxyUrlUndefined));
         setNodes([]);
         return;
       }
 
       setServerError(null);
       setConnectedHost(data?.data?.connectedHost || null);
+      setProxyUrlTried(data?.debug?.proxyUrl ?? null);
+      setProxyStatusCode(data?.debug?.proxyStatusCode ?? null);
+      setProxyErrorRaw(data?.debug?.proxyErrorRaw ?? null);
+      setProxyUrlUndefined(Boolean(data?.debug?.proxyUrlUndefined));
 
       if (data.data && data.data.nodes) {
         // Transform backend format to frontend format
@@ -140,8 +153,14 @@ export default function Dashboard() {
           {connectedHost && (
             <div className="text-sm text-slate-600 dark:text-slate-300 mt-2">Connected to host: {connectedHost}</div>
           )}
-          {serverError && (
-            <div className="text-sm text-red-600 dark:text-red-400 mt-2">Debug: {serverError}</div>
+
+          {(proxyUrlTried || proxyStatusCode || proxyErrorRaw || proxyUrlUndefined) && (
+            <div className="text-sm mt-2">
+              <div className="text-slate-600 dark:text-slate-300">Proxy tried: {proxyUrlTried ?? '—'}</div>
+              <div className="text-slate-600 dark:text-slate-300">HTTP code: {proxyStatusCode ?? '—'}</div>
+              <div className="text-red-600 dark:text-red-400">Error: {proxyErrorRaw ?? serverError ?? '—'}</div>
+              <div className="text-xs text-slate-500">Proxy URL undefined: {proxyUrlUndefined ? 'yes' : 'no'}</div>
+            </div>
           )}
         </div>
         <div className="flex items-center text-sm text-slate-500 bg-white dark:bg-slate-800 px-3 py-1.5 rounded-full border border-slate-200 dark:border-slate-700 shadow-sm">
