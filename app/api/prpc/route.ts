@@ -1,22 +1,22 @@
 /**
  * API Route: /api/prpc
- * Server-side proxy for pRPC requests with automatic failover
+ * Server-side proxy for pRPC requests (VPS proxy mode only)
  * 
  * Usage: /api/prpc?method=getGossipNodes
  * 
  * This endpoint:
- * - Forwards JSON-RPC requests to Xandeum pRPC nodes
- * - Automatically tries next host on failure (failover)
+ * - Forwards JSON-RPC requests ONLY to the configured VPS proxy (PRPC_PROXY_URL)
+ * - NO fallback to public pRPC hosts in production
+ * - Requires PRPC_PROXY_URL environment variable to be set
  * - Keeps pRPC IP addresses server-side only (security)
- * - Caches for 60s to reduce node load
  */
 
 import { NextResponse } from "next/server";
-import { getPRPCHosts } from "@/lib/prpcHosts";
 
-const PRPC_PROXY_URL = process.env.PRPC_PROXY_URL || process.env.NEXT_PUBLIC_PRPC_ENDPOINT || '';
+const PRPC_PROXY_URL = process.env.PRPC_PROXY_URL || '';
 const PROXY_API_KEY = process.env.PROXY_API_KEY ?? '';
 const isDebug = process.env.DEBUG_PRPC === '1' || process.env.NODE_ENV === 'development';
+const isProduction = process.env.VERCEL === '1' || process.env.NODE_ENV === 'production';
 
 async function validateProxy(proxyUrl: string) {
   try {
@@ -46,7 +46,21 @@ export async function GET(req: Request) {
     params,
   };
 
-  // If a proxy URL is configured, forward the JSON-RPC body to that proxy
+  // In production (Vercel or NODE_ENV=production), REQUIRE the proxy URL
+  if (isProduction && !PRPC_PROXY_URL) {
+    if (isDebug) console.error('[prpc] Production mode: PRPC_PROXY_URL not configured');
+    return NextResponse.json(
+      {
+        ok: false,
+        error: 'Proxy URL not configured',
+        proxyConfigError: 'PRPC_PROXY_URL environment variable is required in production',
+        selectedProxyUrl: null,
+      },
+      { status: 400 }
+    );
+  }
+
+  // If proxy URL is configured, use it
   if (PRPC_PROXY_URL) {
     if (isDebug) console.log('[prpc] Start request', { method, proxyUrl: PRPC_PROXY_URL });
     try {
@@ -74,78 +88,37 @@ export async function GET(req: Request) {
 
       if (!response.ok) {
         if (isDebug) console.error('[prpc] Proxy returned non-OK', status, json);
-        return NextResponse.json({ ok: false, error: 'Proxy error', status, detail: json, proxyUrl: PRPC_PROXY_URL }, { status: 502 });
+        return NextResponse.json(
+          { ok: false, error: 'Proxy error', status, detail: json, selectedProxyUrl: PRPC_PROXY_URL },
+          { status: 502 }
+        );
       }
 
       // Expected proxy shape: { ok: true, host, data }
       return NextResponse.json(
-        { ok: true, proxy: PRPC_PROXY_URL, host: json?.host || null, data: json?.data ?? json, proxyStatusCode: status },
+        { ok: true, proxy: PRPC_PROXY_URL, host: json?.host || null, data: json?.data ?? json, proxyStatusCode: status, selectedProxyUrl: PRPC_PROXY_URL },
         { headers: { 'Cache-Control': 'public, s-maxage=60, stale-while-revalidate=120' } }
       );
     } catch (err: any) {
       const e = err instanceof Error ? err : new Error(String(err));
       if (isDebug) console.error('[prpc] Failed to contact PRPC proxy:', e.message);
-      return NextResponse.json({ ok: false, error: 'Failed to contact PRPC proxy', detail: e.message, proxyUrl: PRPC_PROXY_URL }, { status: 502 });
+      return NextResponse.json(
+        { ok: false, error: 'Failed to contact PRPC proxy', detail: e.message, selectedProxyUrl: PRPC_PROXY_URL },
+        { status: 502 }
+      );
     }
   }
 
-  // Fallback: try direct hosts (legacy behaviour)
-  const PRPC_HOSTS = getPRPCHosts();
-
-  let lastError: Error | null = null;
-  let lastHost: string = "";
-
-  for (const host of PRPC_HOSTS) {
-    try {
-      lastHost = host;
-      
-      // Use AbortController for timeout
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 5000);
-      
-      const response = await fetch(host, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-        signal: controller.signal,
-      });
-
-      clearTimeout(timeoutId);
-
-      if (response.ok) {
-        const json = await response.json();
-        
-        // Success - return with cache headers
-        return NextResponse.json(
-          { ok: true, host, data: json },
-          {
-            headers: {
-              "Cache-Control": "public, s-maxage=60, stale-while-revalidate=120",
-            },
-          }
-        );
-      }
-    } catch (err) {
-      // Log but continue to next host
-      lastError = err instanceof Error ? err : new Error(String(err));
-      console.warn(`pRPC host ${host} failed: ${lastError.message}`);
-      continue;
-    }
-  }
-
-  // All hosts failed
-  console.error(
-    `All pRPC hosts failed. Last host: ${lastHost}, Error: ${lastError?.message}`
-  );
-
+  // No proxy configured and not in production: error
+  if (isDebug) console.warn('[prpc] No proxy URL configured and not in production mode');
   return NextResponse.json(
     {
       ok: false,
-      error: "All pRPC hosts failed",
-      lastHost,
-      lastError: lastError?.message,
+      error: 'Proxy URL not configured',
+      proxyConfigError: 'PRPC_PROXY_URL environment variable is not set',
+      selectedProxyUrl: null,
     },
-    { status: 503 } // Service Unavailable
+    { status: 400 }
   );
 }
 
@@ -154,6 +127,21 @@ export async function POST(req: Request) {
   try {
     const body = await req.json();
 
+    // In production (Vercel or NODE_ENV=production), REQUIRE the proxy URL
+    if (isProduction && !PRPC_PROXY_URL) {
+      if (isDebug) console.error('[prpc:POST] Production mode: PRPC_PROXY_URL not configured');
+      return NextResponse.json(
+        {
+          ok: false,
+          error: 'Proxy URL not configured',
+          proxyConfigError: 'PRPC_PROXY_URL environment variable is required in production',
+          selectedProxyUrl: null,
+        },
+        { status: 400 }
+      );
+    }
+
+    // If proxy URL is configured, use it
     if (PRPC_PROXY_URL) {
       if (isDebug) console.log('[prpc:POST] Start', { proxyUrl: PRPC_PROXY_URL });
       try {
@@ -177,71 +165,36 @@ export async function POST(req: Request) {
         if (isDebug) console.log('[prpc:POST] Proxy response', { status, json });
 
         if (!response.ok) {
-          return NextResponse.json({ ok: false, error: 'Proxy error', status, detail: json, proxyUrl: PRPC_PROXY_URL }, { status: 502 });
+          return NextResponse.json(
+            { ok: false, error: 'Proxy error', status, detail: json, selectedProxyUrl: PRPC_PROXY_URL },
+            { status: 502 }
+          );
         }
 
-        return NextResponse.json({ ok: true, proxy: PRPC_PROXY_URL, host: json?.host || null, data: json?.data ?? json, proxyStatusCode: status }, { headers: { 'Cache-Control': 'public, s-maxage=60, stale-while-revalidate=120' } });
+        return NextResponse.json(
+          { ok: true, proxy: PRPC_PROXY_URL, host: json?.host || null, data: json?.data ?? json, proxyStatusCode: status, selectedProxyUrl: PRPC_PROXY_URL },
+          { headers: { 'Cache-Control': 'public, s-maxage=60, stale-while-revalidate=120' } }
+        );
       } catch (err: any) {
         const e = err instanceof Error ? err : new Error(String(err));
         if (isDebug) console.error('[prpc:POST] Failed to contact PRPC proxy:', e.message);
-        return NextResponse.json({ ok: false, error: 'Failed to contact PRPC proxy', detail: e.message, proxyUrl: PRPC_PROXY_URL }, { status: 502 });
+        return NextResponse.json(
+          { ok: false, error: 'Failed to contact PRPC proxy', detail: e.message, selectedProxyUrl: PRPC_PROXY_URL },
+          { status: 502 }
+        );
       }
     }
 
-    // Fallback: direct hosts
-    const PRPC_HOSTS = getPRPCHosts();
-
-    let lastError: Error | null = null;
-    let lastHost: string = "";
-
-    for (const host of PRPC_HOSTS) {
-      try {
-        lastHost = host;
-        
-        // Use AbortController for timeout
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 5000);
-        
-        const response = await fetch(host, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
-          signal: controller.signal,
-        });
-
-        clearTimeout(timeoutId);
-
-        if (response.ok) {
-          const json = await response.json();
-
-          return NextResponse.json(
-            { ok: true, host, data: json },
-            {
-              headers: {
-                "Cache-Control": "public, s-maxage=60, stale-while-revalidate=120",
-              },
-            }
-          );
-        }
-      } catch (err) {
-        lastError = err instanceof Error ? err : new Error(String(err));
-        console.warn(`pRPC host ${host} failed: ${lastError.message}`);
-        continue;
-      }
-    }
-
-    console.error(
-      `All pRPC hosts failed. Last host: ${lastHost}, Error: ${lastError?.message}`
-    );
-
+    // No proxy configured: error
+    if (isDebug) console.warn('[prpc:POST] No proxy URL configured');
     return NextResponse.json(
       {
         ok: false,
-        error: "All pRPC hosts failed",
-        lastHost,
-        lastError: lastError?.message,
+        error: 'Proxy URL not configured',
+        proxyConfigError: 'PRPC_PROXY_URL environment variable is not set',
+        selectedProxyUrl: null,
       },
-      { status: 503 }
+      { status: 400 }
     );
   } catch (error) {
     console.error("pRPC proxy error:", error);
