@@ -1,15 +1,25 @@
 /**
- * pRPC Client - Handles all communication with Xandeum pRPC endpoints
+ * pRPC Client - Client-side only Cloudflare Worker proxy
  * 
  * This client:
- * - Calls the server-side proxy at /api/prpc (keeps IPs hidden from browser)
- * - Automatically handles failover through PRPC_HOSTS
+ * - Fetches pRPC data directly from a Cloudflare Worker
+ * - Worker URL configured via NEXT_PUBLIC_WORKER_URL
  * - Normalizes JSON-RPC responses to PNode format
  * - Provides typed interfaces for dashboard components
  */
 
 import { pNode, NodeDetail, LatencyData } from './types';
-import { getPRPCHosts } from './prpcHosts';
+
+/**
+ * Get the Cloudflare Worker URL from environment
+ */
+function getWorkerUrl(): string {
+  const url = process.env.NEXT_PUBLIC_WORKER_URL || '';
+  if (!url) {
+    console.error('NEXT_PUBLIC_WORKER_URL environment variable not set');
+  }
+  return url;
+}
 
 /**
  * Normalize a pRPC gossip node to our PNode type
@@ -56,40 +66,29 @@ export function parseGossipResponse(resp: any): pNode[] {
 }
 
 /**
- * Fetch all gossip nodes from pRPC via server-side proxy
- * 
- * When called from server: directly calls the pRPC nodes
- * When called from client: calls /api/prpc endpoint
+ * Fetch all gossip nodes from Cloudflare Worker
+ * Client-side only. Worker handles all upstream pRPC requests.
  */
 export async function getGossipNodes(): Promise<pNode[]> {
-  try {
-    // On server side, directly fetch from pRPC hosts
-    if (typeof window === 'undefined') {
-      return await getGossipNodesServer();
-    }
+  const workerUrl = getWorkerUrl();
+  if (!workerUrl) {
+    console.error('Cannot fetch gossip nodes: NEXT_PUBLIC_WORKER_URL not configured');
+    return [];
+  }
 
-    // On client side, use the API proxy
-    const response = await fetch('/api/prpc?method=getGossipNodes', {
+  try {
+    const response = await fetch(`${workerUrl}?method=getGossipNodes`, {
       method: 'GET',
-      headers: {
-        'Content-Type': 'application/json',
-      },
+      headers: { 'Content-Type': 'application/json' },
     });
 
     if (!response.ok) {
-      console.error('getGossipNodes failed:', response.statusText);
+      console.error('getGossipNodes failed:', response.statusText, response.status);
       return [];
     }
 
-    const proxyResult = await response.json();
-
-    if (!proxyResult.ok) {
-      console.error('pRPC proxy error:', proxyResult.error);
-      return [];
-    }
-
-    // proxyResult.data is the JSON-RPC response from pRPC
-    return parseGossipResponse(proxyResult.data);
+    const json = await response.json();
+    return parseGossipResponse(json);
   } catch (error) {
     console.error('Error fetching gossip nodes:', error);
     return [];
@@ -97,56 +96,19 @@ export async function getGossipNodes(): Promise<pNode[]> {
 }
 
 /**
- * Server-side direct fetch from pRPC hosts
- */
-async function getGossipNodesServer(): Promise<pNode[]> {
-  const PRPC_HOSTS = getPRPCHosts();
-
-  const body = {
-    jsonrpc: "2.0",
-    id: "xandeum-dashboard",
-    method: "getGossipNodes",
-    params: [],
-  };
-
-  for (const host of PRPC_HOSTS) {
-    try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 5000);
-
-      const response = await fetch(host, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-        signal: controller.signal,
-      });
-
-      clearTimeout(timeoutId);
-
-      if (response.ok) {
-        const json = await response.json();
-        return parseGossipResponse(json);
-      }
-    } catch (err) {
-      console.warn(`pRPC host ${host} failed: ${err}`);
-      continue;
-    }
-  }
-
-  console.error('All pRPC hosts failed');
-  return [];
-}
-
-/**
- * Fetch information for a specific node
+ * Fetch information for a specific node from Cloudflare Worker
  */
 export async function getNodeInfo(pubkey: string): Promise<NodeDetail | null> {
+  const workerUrl = getWorkerUrl();
+  if (!workerUrl) {
+    console.error('Cannot fetch node info: NEXT_PUBLIC_WORKER_URL not configured');
+    return null;
+  }
+
   try {
-    const response = await fetch(`/api/prpc?method=getNodeInfo&params=${JSON.stringify([pubkey])}`, {
+    const response = await fetch(`${workerUrl}?method=getNodeInfo&params=${JSON.stringify([pubkey])}`, {
       method: 'GET',
-      headers: {
-        'Content-Type': 'application/json',
-      },
+      headers: { 'Content-Type': 'application/json' },
     });
 
     if (!response.ok) {
@@ -154,14 +116,8 @@ export async function getNodeInfo(pubkey: string): Promise<NodeDetail | null> {
       return null;
     }
 
-    const proxyResult = await response.json();
-
-    if (!proxyResult.ok) {
-      console.error('pRPC proxy error:', proxyResult.error);
-      return null;
-    }
-
-    const nodeData = proxyResult.data?.result;
+    const json = await response.json();
+    const nodeData = json?.result;
     if (!nodeData) {
       console.warn(`No node info found for ${pubkey}`);
       return null;
@@ -175,34 +131,7 @@ export async function getNodeInfo(pubkey: string): Promise<NodeDetail | null> {
 }
 
 /**
- * Check latency to a specific node
- */
-export async function getNodeLatency(pubkey: string): Promise<number> {
-  const startTime = Date.now();
-
-  try {
-    const response = await fetch(`/api/prpc?method=checkNodeHealth&params=${JSON.stringify([pubkey])}`, {
-      method: 'GET',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-    });
-
-    const latency = Date.now() - startTime;
-
-    if (!response.ok) {
-      return -1;
-    }
-
-    return latency;
-  } catch (error) {
-    console.error('Error checking node latency:', error);
-    return -1;
-  }
-}
-
-/**
- * Format node detail response
+ * Format node detail data
  */
 function formatNodeDetailData(data: any): NodeDetail {
   return {
@@ -224,33 +153,29 @@ function formatNodeDetailData(data: any): NodeDetail {
 }
 
 /**
- * Health check for pRPC endpoint via proxy
+ * Health check for pRPC Worker endpoint
  */
 export async function checkPRPCHealth(): Promise<{ healthy: boolean; latency: number }> {
+  const workerUrl = getWorkerUrl();
+  if (!workerUrl) {
+    return { healthy: false, latency: -1 };
+  }
+
   const startTime = Date.now();
 
   try {
-    const response = await fetch('/api/prpc?method=getHealth', {
+    const response = await fetch(`${workerUrl}?method=getGossipNodes`, {
       method: 'GET',
-      headers: {
-        'Content-Type': 'application/json',
-      },
+      headers: { 'Content-Type': 'application/json' },
+      signal: AbortSignal.timeout(5000),
     });
 
     const latency = Date.now() - startTime;
+    const healthy = response.ok;
 
-    const proxyResult = await response.json();
-    const healthy = proxyResult.ok && response.ok;
-
-    return {
-      healthy,
-      latency,
-    };
+    return { healthy, latency };
   } catch (error) {
     console.error('pRPC health check failed:', error);
-    return {
-      healthy: false,
-      latency: -1,
-    };
+    return { healthy: false, latency: -1 };
   }
 }

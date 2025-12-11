@@ -1,27 +1,23 @@
 /**
  * Dashboard Page
  * Main dashboard showing all pNodes
- * Converted from Vite/React Router to Next.js App Router
+ * Client-side only, fetches from Cloudflare Worker
  */
 
 'use client';
 
 import React, { useState, useEffect, useMemo } from 'react';
-import { Search, Filter, RefreshCw } from 'lucide-react';
+import { Search, Filter, RefreshCw, AlertCircle } from 'lucide-react';
 import { PNode, FrontendNodeMetrics, SortField, SortOrder, FilterState } from '@/lib/types';
 import { MetricsCards } from '@/components/MetricsCards';
 import { NodeTable } from '@/components/NodeTable';
+import { getGossipNodes } from '@/lib/prpc';
 
 export default function Dashboard() {
   const [nodes, setNodes] = useState<PNode[]>([]);
   const [loading, setLoading] = useState(true);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
-  const [connectedHost, setConnectedHost] = useState<string | null>(null);
-  const [serverError, setServerError] = useState<string | null>(null);
-  const [proxyUrlTried, setProxyUrlTried] = useState<string | null>(null);
-  const [proxyStatusCode, setProxyStatusCode] = useState<number | null>(null);
-  const [proxyErrorRaw, setProxyErrorRaw] = useState<string | null>(null);
-  const [proxyUrlUndefined, setProxyUrlUndefined] = useState<boolean>(false);
+  const [error, setError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [filter, setFilter] = useState<FilterState>({ status: 'all', minVersion: '' });
   const [sortField, setSortField] = useState<SortField>('latency');
@@ -30,45 +26,33 @@ export default function Dashboard() {
   const fetchData = async () => {
     setLoading(true);
     try {
-      // Fetch from our existing Next.js API
-      const response = await fetch('/api/nodes');
-      const data = await response.json();
-
-      if (!data || data.success === false) {
-        // also capture debug info if present
-        setServerError(data?.error || 'Failed to fetch nodes from server');
-        setProxyUrlTried(data?.debug?.proxyUrl ?? null);
-        setProxyStatusCode(data?.debug?.proxyStatusCode ?? null);
-        setProxyErrorRaw(data?.debug?.proxyErrorRaw ?? data?.detail ?? null);
-        setProxyUrlUndefined(Boolean(data?.debug?.proxyUrlUndefined));
+      const nodes = await getGossipNodes();
+      
+      if (!nodes || nodes.length === 0) {
+        setError('No nodes returned from Worker. Check NEXT_PUBLIC_WORKER_URL.');
         setNodes([]);
         return;
       }
 
-      setServerError(null);
-      setConnectedHost(data?.data?.connectedHost || null);
-      setProxyUrlTried(data?.debug?.proxyUrl ?? null);
-      setProxyStatusCode(data?.debug?.proxyStatusCode ?? null);
-      setProxyErrorRaw(data?.debug?.proxyErrorRaw ?? null);
-      setProxyUrlUndefined(Boolean(data?.debug?.proxyUrlUndefined));
-
-      if (data.data && data.data.nodes) {
-        // Transform backend format to frontend format
-        const transformed: PNode[] = data.data.nodes.map((node: any) => ({
-          pubkey: node.pubkey,
-          gossip: node.gossip_address,
-          version: node.version,
-          latency: node.latency,
-          online: node.online_status === 'online',
-          lastSeen: node.last_seen,
-          location: node.location,
-        }));
-        setNodes(transformed);
-        setLastUpdated(new Date());
-      }
-    } catch (error) {
-      console.error('Failed to fetch nodes', error);
-      setServerError(String(error));
+      setError(null);
+      
+      // Transform to frontend format
+      const transformed: PNode[] = nodes.map((node: any) => ({
+        pubkey: node.pubkey,
+        gossip: node.gossip_address,
+        version: node.version,
+        latency: node.latency,
+        online: node.online_status === 'online',
+        lastSeen: node.last_seen,
+        location: node.location,
+      }));
+      
+      setNodes(transformed);
+      setLastUpdated(new Date());
+    } catch (err) {
+      console.error('Failed to fetch nodes:', err);
+      setError(`Failed to fetch nodes: ${String(err)}`);
+      setNodes([]);
     } finally {
       setLoading(false);
     }
@@ -150,16 +134,11 @@ export default function Dashboard() {
           <p className="text-slate-500 dark:text-slate-400 mt-1">
             Real-time insights for Xandeum pNode Network
           </p>
-          {connectedHost && (
-            <div className="text-sm text-slate-600 dark:text-slate-300 mt-2">Connected to host: {connectedHost}</div>
-          )}
-
-          {(proxyUrlTried || proxyStatusCode || proxyErrorRaw || proxyUrlUndefined) && (
-            <div className="text-sm mt-2">
-              <div className="text-slate-600 dark:text-slate-300">Proxy tried: {proxyUrlTried ?? '—'}</div>
-              <div className="text-slate-600 dark:text-slate-300">HTTP code: {proxyStatusCode ?? '—'}</div>
-              <div className="text-red-600 dark:text-red-400">Error: {proxyErrorRaw ?? serverError ?? '—'}</div>
-              <div className="text-xs text-slate-500">Proxy URL undefined: {proxyUrlUndefined ? 'yes' : 'no'}</div>
+          
+          {error && (
+            <div className="flex items-center gap-2 mt-3 p-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg">
+              <AlertCircle size={16} className="text-red-600 dark:text-red-400" />
+              <span className="text-sm text-red-600 dark:text-red-400">{error}</span>
             </div>
           )}
         </div>
@@ -200,16 +179,25 @@ export default function Dashboard() {
         </div>
       </div>
 
-      <NodeTable 
-        nodes={processedNodes} 
-        sortField={sortField} 
-        sortOrder={sortOrder}
-        onSort={handleSort}
-      />
-      
-      <div className="mt-4 text-center text-xs text-slate-400">
-        Showing {processedNodes.length} of {nodes.length} nodes
-      </div>
+      {loading && nodes.length === 0 ? (
+        <div className="text-center py-12">
+          <RefreshCw size={32} className="mx-auto animate-spin text-slate-400 mb-2" />
+          <p className="text-slate-500">Loading nodes...</p>
+        </div>
+      ) : (
+        <>
+          <NodeTable 
+            nodes={processedNodes} 
+            sortField={sortField} 
+            sortOrder={sortOrder}
+            onSort={handleSort}
+          />
+          
+          <div className="mt-4 text-center text-xs text-slate-400">
+            Showing {processedNodes.length} of {nodes.length} nodes
+          </div>
+        </>
+      )}
     </div>
   );
 }
